@@ -1,6 +1,11 @@
 ![efadro](https://img.shields.io/badge/efadro-self--hosted%20messenger-6366f1)
 
-# efadro
+# Efadro
+
+!!!WARNING!!! Efadro is still in development and in alpha testing!
+
+EFADRO BETA TEST STARTS AUG 20
+
 ## ✨ Features
 
 **Join flow (exactly as designed)**
