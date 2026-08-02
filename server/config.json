@@ -1,0 +1,54 @@
+{
+  "serverName": "Efadro Server",
+  "host": "0.0.0.0",
+  "port": 3000,
+  "serverPassword": "",
+  "jwtSecret": "bb510160b56e35608b16a90dd3e3cf1be964f249dacfa0891b96a9834ed7e0f04bcb105dc20e51e7095b6cf251d1de0a",
+  "tokenExpiryDays": 7,
+  "owner": {
+    "username": "owner",
+    "password": "efadro-owner",
+    "forceReset": false
+  },
+  "turnstile": {
+    "enabled": false,
+    "siteKey": "",
+    "secretKey": ""
+  },
+  "registration": {
+    "enabled": true
+  },
+  "client": {
+    "serve": true
+  },
+  "calls": {
+    "enabled": true,
+    "ringTimeoutSec": 45,
+    "iceServers": [
+      {
+        "urls": [
+          "stun:stun.l.google.com:19302"
+        ]
+      }
+    ]
+  },
+  "uploads": {
+    "maxFileSizeMb": 25
+  },
+  "limits": {
+    "maxMessageLength": 4000,
+    "maxGroupNameLength": 64,
+    "maxDisplayNameLength": 40,
+    "maxGroupSize": 100
+  },
+  "rateLimit": {
+    "enabled": true,
+    "windowMs": 60000,
+    "authPerMinute": 20,
+    "messagePerMinute": 120,
+    "apiPerMinute": 600
+  },
+  "corsOrigins": [
+    "*"
+  ]
+}
