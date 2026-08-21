@@ -63,7 +63,7 @@ EFADRO BETA TEST STARTS AUG 20
 
 **Security extras**
 - **Two-factor authentication (TOTP)**: QR-code setup with any authenticator app (Google Authenticator, Aegis, 1Password…), 8 one-time backup codes, regenerate/disable flows — login becomes a two-step process with a short-lived pending token
-- **Blocking users (v1.7.0)**: block anyone from their profile card, the DM drawer or a message — a red “You blocked @user” banner takes over the composer with a one-tap *Unblock*, and Settings → **Privacy** lists everyone you’ve blocked. Server-enforced on every transport (REST, WebSocket, file & voice uploads, polls, forwards, calls): once either side blocks, neither can send in that DM or ring the other, the blocked user can’t re-open the chat or find you in user search, and typing indicators / read receipts stop crossing the block. Blocking is private (nobody is notified), instant to undo, and shared group chats are unaffected — group co-membership never changes. Honest trade-off: the rejected sender sees a “You can’t send messages to this user” error (the standard tell-tale), and presence/last-seen of a blocked peer stays visible inside existing chats
+- **Blocking users — undetectable by design (v1.7.0, stealth since v1.8.0)**: block anyone from their profile card, the DM drawer or a message — a red “You blocked @user” banner takes over the composer with a one-tap *Unblock*, and Settings → **Privacy** lists everyone you’ve blocked. To the blocked person **nothing changes, on purpose**: their messages are accepted and stored as *ghost* messages that only they ever see (delivered with a normal 201 + WS echo, visible in their own history and chat preview) but are permanently invisible to you — never fanned out, never in your unread count, chat preview, history or search, and they stay invisible even after you unblock. Their calls ring out and log a “Missed call” *on their side only*; the chat re-opens, user search, profiles and presence all behave exactly as before; typing indicators and read receipts simply go quiet (indistinguishable from being ignored). The only side that ever sees an error is *you* (privately: “You blocked this user — unblock them to chat”), so blocking is impossible to confirm from the blocked side. Shared group chats are unaffected, unblocking is instant, and ghost messages can still be edited/deleted/reacted to by their author — every transport (REST, WebSocket, file & voice uploads, polls, forwards, E2EE) is covered server-side. Honest trade-offs: the blocker’s own presence/last-seen stays visible (hiding it would itself be a tell), and if a blocked person upgrades a never-encrypted DM to E2EE the 🔒 chip may appear on the blocker’s side after a reload
 
 **Roles & moderation (server-enforced hierarchy)**
 | Role | Level | Powers |
@@ -350,7 +350,7 @@ efadro/
 ## 🧪 Testing
 
 ```bash
-npm test            # boots an isolated server and runs 283 end-to-end assertions
+npm test            # boots an isolated server and runs 291 end-to-end assertions
 ```
 
 The suite covers the gate flow, auth, DMs/groups, WebSocket events, the full
@@ -375,9 +375,11 @@ payload unwrapping, one-pending & 10-minute-TTL rules), server-only mode
 and calls (config endpoint & auth, invite→ring→accept→SDP/ICE relay→hangup
 with a duration row, decline/cancel flows, busy detection, disabled mode
 rejection, ring-timeout expiry with a missed-call row), and user blocking
-(block/unblock lifecycle, either-way DM cutoff over REST and WS, blocked
-calls, search invisibility, no payload leak to the blocked side, typing/
-read-receipt suppression, WS send errors echoing the client bubble id).
+(stealth lifecycle: block/unblock, ghost sends accepted 201 yet invisible to
+the blocker across REST and WS, untouched unread/preview, normal-looking
+sender view, private blocker-only errors, ghost calls that ring out with a
+caller-only missed-call row, search/profile indistinguishability, typing/
+read-receipt suppression, ghost permanence after unblocking).
 
 There are also interactive Playwright suites that drive the real UI in a
 browser (used during development, not part of `npm test`):

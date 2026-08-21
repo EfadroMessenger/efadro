@@ -551,7 +551,7 @@ try {
   ok((await req('DELETE', `/api/chats/${grp.id}/invite`, { token: alice.token })).status === 200, 'revoke works');
   ok((await req('POST', `/api/invites/${rot.json.invite.token}/join`, { token: grace.token })).status === 404, 'revoked link is dead');
 
-  console.log('• User blocking (v1.7)');
+  console.log('• User blocking — stealth (v1.8)');
   {
     const hana = await signup('hana');
     const ivan = await signup('ivan');
@@ -565,45 +565,70 @@ try {
     const blocksList = await req('GET', '/api/users/blocks', { token: hana.token });
     ok(blocksList.json.users?.length === 1 && blocksList.json.users[0].username === 'ivan', 'blocks list shows ivan');
 
-    const eSend = await req('POST', `/api/chats/${dmDE.id}/messages`, { token: ivan.token, body: { content: 'hello?' } });
-    ok(eSend.status === 403 && eSend.json.code === 'blocked', 'blocked user cannot send in the DM');
+    // STEALTH: the blocked user's send is accepted like any other…
+    const ghost = await req('POST', `/api/chats/${dmDE.id}/messages`, { token: ivan.token, body: { content: 'are you there?' } });
+    ok(ghost.status === 201 && ghost.json.message?.id > 0, 'blocked user\'s send is accepted (201, real id) — no error to hint at');
+    // …but is a ghost: visible to its author only
+    const ivanHist = (await req('GET', `/api/chats/${dmDE.id}/messages`, { token: ivan.token })).json.messages;
+    ok(ivanHist.some((m) => m.id === ghost.json.message.id), 'the sender still sees their own ghost message');
+    const hanaHist = (await req('GET', `/api/chats/${dmDE.id}/messages`, { token: hana.token })).json.messages;
+    ok(!hanaHist.some((m) => m.id === ghost.json.message.id), 'the blocker never sees the ghost message');
+    const hanaChat = (await req('GET', `/api/chats/${dmDE.id}`, { token: hana.token })).json.chat;
+    ok(hanaChat.unread === 0 && hanaChat.lastMessage?.id !== ghost.json.message.id, 'blocker\'s unread + chat preview are untouched');
+    const ivanChat = (await req('GET', `/api/chats/${dmDE.id}`, { token: ivan.token })).json.chat;
+    ok(ivanChat.lastMessage?.id === ghost.json.message.id, 'sender\'s chat preview looks perfectly normal');
+
+    // the blocker's own send gets a private, clear error
     const dSend = await req('POST', `/api/chats/${dmDE.id}/messages`, { token: hana.token, body: { content: 'sorry' } });
-    ok(dSend.status === 403, 'blocker cannot send either (either-way cutoff)');
+    ok(dSend.status === 403 && dSend.json.code === 'blocked', 'blocker is told (privately) to unblock first');
+    ok(hanaChat.blocked === true && ivanChat.blocked === false, 'blocked flag is viewer-scoped (no leak to the blocked side)');
 
-    const daveChats = await req('GET', '/api/chats', { token: hana.token });
-    ok(daveChats.json.chats.find((c) => c.id === dmDE.id)?.blocked === true, 'blocker sees the blocked flag on the chat payload');
-    const erinChats = await req('GET', '/api/chats', { token: ivan.token });
-    ok(erinChats.json.chats.find((c) => c.id === dmDE.id)?.blocked === false, 'blocked user gets no leak in their payload');
-
-    ok((await req('POST', '/api/chats/dm', { token: ivan.token, body: { userId: hana.user.id } })).status === 403, 'blocked user cannot reopen the DM');
-    const dDm = await req('POST', '/api/chats/dm', { token: hana.token, body: { userId: ivan.user.id } });
-    ok(dDm.status === 403 && dDm.json.code === 'blocked', 'blocker is told to unblock first');
-
-    const erinSearch = await req('GET', '/api/users/search?q=hana', { token: ivan.token });
-    ok(erinSearch.json.users?.length === 0, 'blocked user cannot find the blocker in user search');
-    const daveSearch = await req('GET', '/api/users/search?q=ivan', { token: hana.token });
-    ok(daveSearch.json.users?.length === 1, 'blocker can still find the blocked user (to unblock)');
-
+    ok((await req('POST', '/api/chats/dm', { token: ivan.token, body: { userId: hana.user.id } })).status === 200, 'blocked user can still open/find the DM — nothing changed for them');
+    const ivanSearch = await req('GET', '/api/users/search?q=hana', { token: ivan.token });
+    ok(ivanSearch.json.users?.length === 1, 'blocked user still finds the blocker in user search');
     ok((await req('POST', `/api/users/${hana.user.id}/block`, { token: hana.token, body: {} })).status === 400, 'cannot block yourself');
 
-    // WS: blocked user cannot call; failed sends echo the clientId for the UI
-    const wD = await wsConnect(hana.token);
-    const wE = await wsConnect(ivan.token);
-    const errCall = waitFrame(wE, 'call:error');
-    wE.send(JSON.stringify({ t: 'call:invite', data: { chatId: dmDE.id, video: false } }));
-    ok(/call this user/i.test((await errCall).data?.message || ''), 'blocked user cannot call the blocker');
-    const errSend = waitFrame(wE, 'error', 4000, (f) => f.data?.clientId === 'test-cid');
-    wE.send(JSON.stringify({ t: 'msg:send', data: { chatId: dmDE.id, content: 'ws?', clientId: 'test-cid' } }));
-    const errSendF = await errSend;
-    ok(errSendF.data?.status === 403 && errSendF.data?.chatId === dmDE.id, 'failed WS send echoes chatId + clientId for the optimistic bubble');
-    // typing signals don't cross a block
-    wE.send(JSON.stringify({ t: 'typing', data: { chatId: dmDE.id, typing: true } }));
+    // WS: a ghost call rings out for the caller; the blocker hears nothing at all
+    const wH = await wsConnect(hana.token);
+    const wI = await wsConnect(ivan.token);
+    const ringing = waitFrame(wI, 'call:ringing');
+    wI.send(JSON.stringify({ t: 'call:invite', data: { chatId: dmDE.id, video: false } }));
+    const ring = await ringing;
+    const callId = ring.data?.call?.callId;
+    ok(Boolean(callId), 'blocked user\'s call rings normally on their side (no error)');
+    await sleep(700);
+    ok(!wH.frames.some((f) => f.t === 'call:ring' || f.t === 'call:busy' || f.t === 'call:error'), 'the blocker receives no call frames whatsoever');
+    // cancel from the caller side → "Missed call" row only the caller sees
+    wI.send(JSON.stringify({ t: 'call:cancel', data: { callId } }));
+    await waitFrame(wI, 'call:cancelled');
+    await sleep(200);
+    const ivanHist2 = (await req('GET', `/api/chats/${dmDE.id}/messages`, { token: ivan.token })).json.messages;
+    const hanaHist2 = (await req('GET', `/api/chats/${dmDE.id}/messages`, { token: hana.token })).json.messages;
+    ok(ivanHist2.some((m) => m.system && m.content.includes('Missed call')), 'caller sees a normal "Missed call" row');
+    ok(!hanaHist2.some((m) => m.system && m.content.includes('Missed call')), 'the blocker never learns the call happened');
+
+    // WS: a ghost send echoes back to the sender only
+    const echoP = waitFrame(wI, 'msg:new', 4000, (f) => f.data?.clientId === 'ghost-cid');
+    wI.send(JSON.stringify({ t: 'msg:send', data: { chatId: dmDE.id, content: 'ws ghost', clientId: 'ghost-cid' } }));
+    ok(Boolean(await echoP), 'sender gets the normal WS echo for their ghost message');
     await sleep(300);
-    ok(!wD.frames.some((f) => f.t === 'typing' && f.data?.chatId === dmDE.id), 'typing indicators are not relayed across a block');
-    wD.close(); wE.close();
+    ok(!wH.frames.some((f) => f.t === 'msg:new' || f.t === 'chat:updated'), 'no message/payload frame ever reaches the blocker');
+    // typing indicators don't cross a block either
+    wI.send(JSON.stringify({ t: 'typing', data: { chatId: dmDE.id, typing: true } }));
+    await sleep(300);
+    ok(!wH.frames.some((f) => f.t === 'typing'), 'typing indicators are not relayed to the blocker');
+    // the blocker's own failed WS send still echoes the bubble id (client UX)
+    const errSend = waitFrame(wH, 'error', 4000, (f) => f.data?.clientId === 'test-cid');
+    wH.send(JSON.stringify({ t: 'msg:send', data: { chatId: dmDE.id, content: 'mine', clientId: 'test-cid' } }));
+    const errSendF = await errSend;
+    ok(errSendF.data?.status === 403 && errSendF.data?.chatId === dmDE.id, 'blocker\'s failed WS send echoes chatId + clientId');
+    wH.close(); wI.close();
 
     ok((await req('DELETE', `/api/users/${ivan.user.id}/block`, { token: hana.token })).status === 200, 'hana unblocks ivan');
-    ok((await req('POST', `/api/chats/${dmDE.id}/messages`, { token: ivan.token, body: { content: 'we good?' } })).status === 201, 'messages flow again after unblock');
+    ok((await req('POST', `/api/chats/${dmDE.id}/messages`, { token: ivan.token, body: { content: 'we good?' } })).status === 201, 'messages flow for real again after unblock');
+    const hanaHist3 = (await req('GET', `/api/chats/${dmDE.id}/messages`, { token: hana.token })).json.messages;
+    ok(hanaHist3.some((m) => m.content === 'we good?'), 'post-unblock messages are delivered normally');
+    ok(!hanaHist3.some((m) => m.id === ghost.json.message.id), 'ghost messages sent during the block stay invisible forever');
     const blocksAfter = await req('GET', '/api/users/blocks', { token: hana.token });
     ok(blocksAfter.json.users?.length === 0, 'blocks list is empty after unblock');
   }

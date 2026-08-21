@@ -16,21 +16,30 @@ function checkCanPost(user, chatId) {
       code: 'muted', mutedUntil: user.muted_until, reason: user.mute_reason,
     });
   }
+  let silentFor = null;
   if (chat.type === 'dm') {
     const peer = store.getMembers(chatId).find((m) => m.id !== user.id);
-    if (peer && store.isBlockedEitherWay(user.id, peer.id)) {
-      throw new HttpError(403, 'You can’t send messages to this user', { code: 'blocked' });
+    if (peer) {
+      if (store.isBlocked(user.id, peer.id)) {
+        // the blocker knows they blocked — a clear error is helpful (and private)
+        throw new HttpError(403, 'You blocked this user — unblock them to chat', { code: 'blocked' });
+      }
+      if (store.isBlocked(peer.id, user.id)) {
+        // stealth blocking: the sender must NOT be able to tell. Accept the
+        // message as a ghost — stored for their eyes only, never fanned out.
+        silentFor = [peer.id];
+      }
     }
   }
-  return chat;
+  return { chat, silentFor };
 }
 
 /** Insert a centered system message (group events: renames, member changes…). */
-export function postSystemMessage(chatId, actorId, content) {
+export function postSystemMessage(chatId, actorId, content, { dropped = false } = {}) {
   return store.createMessage({
     chatId, userId: actorId,
     content: vStr(String(content ?? ''), { label: 'System message', min: 1, max: 300 }),
-    system: true,
+    system: true, dropped,
   });
 }
 
@@ -106,17 +115,17 @@ export function listBlockedUsersAs(user) {
 
 /** Create a poll message (any writable chat member). Anonymous, single-choice. */
 export function createPollInChat(user, chatId, raw) {
-  const chat = checkCanPost(user, chatId);
+  const { chat, silentFor } = checkCanPost(user, chatId);
   const question = vStr(String(raw?.question ?? ''), { label: 'Poll question', min: 1, max: 300 });
   if (!Array.isArray(raw?.options)) throw new HttpError(400, 'Poll options must be an array');
   const options = raw.options.map((o) => String(o ?? '').trim());
   if (options.length < 2) throw new HttpError(400, 'A poll needs at least 2 options');
   if (options.length > 10) throw new HttpError(400, 'A poll can have at most 10 options');
   for (const o of options) vStr(o, { label: 'Poll option', min: 1, max: 100 });
-  const message = store.createMessage({ chatId, userId: user.id, content: '' });
+  const message = store.createMessage({ chatId, userId: user.id, content: '', dropped: Boolean(silentFor) });
   store.createPoll(message.id, question, options);
   message.poll = store.getPoll(message.id, user.id);
-  return { chat, message };
+  return { chat, message, silentFor };
 }
 
 /** Cast, change, or retract (optionId = null) a single-choice vote. */
@@ -139,9 +148,8 @@ export function voteInPoll(user, messageId, optionId) {
 
 /** Live poll tallies, personalized per member (their own vote highlighted). */
 export function emitPollUpdate(hub, chatId, messageId) {
-  const members = store.getMembers(chatId);
-  for (const m of members) {
-    hub.sendToUser(m.id, { t: 'poll:update', data: { chatId, messageId, poll: store.getPoll(messageId, m.id) } });
+  for (const id of fanoutMembers(chatId, messageId)) {
+    hub.sendToUser(id, { t: 'poll:update', data: { chatId, messageId, poll: store.getPoll(messageId, id) } });
   }
 }
 
@@ -195,7 +203,7 @@ export function joinViaInvite(user, token, limits) {
 
 /** Send a message (validates membership, mute status, length, reply target). */
 export function postMessage(user, chatId, rawContent, limits, meta = {}) {
-  const chat = checkCanPost(user, chatId);
+  const { chat, silentFor } = checkCanPost(user, chatId);
   if (meta.e2ee) {
     const enc = validateE2eeEnvelope(user, chat, meta.e2ee, limits);
     let replyTo = null;
@@ -206,8 +214,8 @@ export function postMessage(user, chatId, rawContent, limits, meta = {}) {
       }
       replyTo = target.id;
     }
-    const message = store.createMessage({ chatId, userId: user.id, content: enc.ct, replyTo, enc });
-    return { chat, message };
+    const message = store.createMessage({ chatId, userId: user.id, content: enc.ct, replyTo, enc, dropped: Boolean(silentFor) });
+    return { chat, message, silentFor };
   }
   const content = vStr(String(rawContent ?? ''), {
     label: 'Message', min: 1, max: limits?.maxMessageLength ?? 4000,
@@ -220,9 +228,9 @@ export function postMessage(user, chatId, rawContent, limits, meta = {}) {
     }
     replyTo = target.id;
   }
-  const message = store.createMessage({ chatId, userId: user.id, content, replyTo });
+  const message = store.createMessage({ chatId, userId: user.id, content, replyTo, dropped: Boolean(silentFor) });
   bumpMentionCounters(chat, user.id, content); // groups only, @username hits
-  return { chat, message };
+  return { chat, message, silentFor };
 }
 
 /** +1 unread-mention badge for every group member @-mentioned in a message. */
@@ -263,28 +271,28 @@ export function toggleReactionAs(user, messageId, rawEmoji) {
 
 /** Broadcast a personalized reaction summary to every chat member. */
 export function emitReactionUpdate(hub, chatId, messageId) {
-  const members = store.getMembers(chatId);
-  for (const m of members) {
-    hub.sendToUser(m.id, {
+  for (const id of fanoutMembers(chatId, messageId)) {
+    hub.sendToUser(id, {
       t: 'msg:reaction',
-      data: { chatId, messageId, reactions: store.reactionSummary(messageId, m.id) },
+      data: { chatId, messageId, reactions: store.reactionSummary(messageId, id) },
     });
   }
 }
 
 /** Copy a message (content + file reference snapshot) into another chat. */
 export function forwardMessage(user, messageId, targetChatId, limits) {
-  const src = store.getMessage(messageId);
+  const src = store.getMessage(messageId, user.id); // authors may forward their own ghost messages
   if (!src) throw new HttpError(404, 'Message not found');
   if (!store.isMember(src.chatId, user.id)) throw new HttpError(403, 'You are not a member of the source chat');
   if (src.poll) throw new HttpError(400, 'Polls cannot be forwarded');
   if (src.enc) throw new HttpError(400, 'Encrypted messages cannot be forwarded');
-  const target = checkCanPost(user, targetChatId);
+  const { chat: target, silentFor } = checkCanPost(user, targetChatId);
   const content = vStr(String(src.content ?? ''), {
     label: 'Message', min: 0, max: limits?.maxMessageLength ?? 4000, optional: true,
   });
   const message = store.createMessage({
     chatId: targetChatId, userId: user.id, content, fwdFrom: src.author.displayName,
+    dropped: Boolean(silentFor),
   });
   // Re-point a new file row at the same stored bytes (no extra disk usage)
   const f = store.getFile(src.file?.id ?? '');
@@ -296,7 +304,7 @@ export function forwardMessage(user, messageId, targetChatId, limits) {
       kind: f.kind, duration: f.duration,
     });
   }
-  return { chat: target, message: store.getMessage(message.id, user.id) };
+  return { chat: target, message: store.getMessage(message.id, user.id, { includeDropped: true }), silentFor };
 }
 
 /** Pin/unpin a message. DMs: any member. Groups: creator or staff. */
@@ -314,32 +322,33 @@ export function setPinnedAs(user, messageId, pin) {
 
 /** Attach an already-uploaded file to a new message (caption optional). */
 export function postFileMessage(user, chatId, caption, file, limits, e2ee = null) {
-  const chat = checkCanPost(user, chatId);
+  const { chat, silentFor } = checkCanPost(user, chatId);
+  const dropped = Boolean(silentFor);
   if (e2ee) {
     // caption travels as a normal encrypted message envelope; the bytes are
     // client-encrypted too (validated on upload metadata, opaque to us)
     const enc = validateE2eeEnvelope(user, chat, { kid: e2ee.kid, iv: e2ee.civ, ct: e2ee.cct, sig: e2ee.csig }, limits);
     const fiv = vB64(e2ee.fiv, { label: 'file iv', minBytes: 12, maxBytes: 12 });
-    const message = store.createMessage({ chatId, userId: user.id, content: enc.ct, enc });
+    const message = store.createMessage({ chatId, userId: user.id, content: enc.ct, enc, dropped });
     store.createFile({
       messageId: message.id, chatId,
       storedName: file.storedName, originalName: file.originalName,
       mime: file.mime, size: file.size, uploadedBy: user.id,
       kind: file.kind, duration: file.duration, enc: true, fiv,
     });
-    return { chat, message: store.getMessage(message.id, user.id) };
+    return { chat, message: store.getMessage(message.id, user.id, { includeDropped: true }), silentFor };
   }
   const content = vStr(String(caption ?? ''), {
     label: 'Caption', min: 0, max: limits?.maxMessageLength ?? 4000, optional: true,
   });
-  const message = store.createMessage({ chatId, userId: user.id, content });
+  const message = store.createMessage({ chatId, userId: user.id, content, dropped });
   store.createFile({
     messageId: message.id, chatId,
     storedName: file.storedName, originalName: file.originalName,
     mime: file.mime, size: file.size, uploadedBy: user.id,
     kind: file.kind, duration: file.duration,
   });
-  return { chat, message: store.getMessage(message.id, user.id) };
+  return { chat, message: store.getMessage(message.id, user.id, { includeDropped: true }), silentFor };
 }
 
 /** Broadcast a fresh per-member chat payload to all members. */
@@ -354,19 +363,33 @@ export function emitChatToMembers(hub, chatId, { type = 'chat:updated', onlyUser
 }
 
 /** Broadcast a new message to every chat member (sender included — client dedupes / reconciles). */
-export function emitNewMessage(hub, chatId, message, clientId = null) {
-  const members = store.getMembers(chatId);
-  hub.sendToUsers(members.map((m) => m.id), { t: 'msg:new', data: { message, clientId } });
+export function emitNewMessage(hub, chatId, message, clientId = null, { excludeUserIds = null } = {}) {
+  const members = fanoutMembers(chatId, message?.id ?? null, excludeUserIds);
+  hub.sendToUsers(members, { t: 'msg:new', data: { message, clientId } });
+}
+
+/**
+ * Recipients for an event about a message: everyone — unless the message is a
+ * ghost (dropped), in which case only its author ever hears about it. Extra
+ * `excludeUserIds` covers the "just blocked, suppress the live echo" case.
+ */
+function fanoutMembers(chatId, messageId = null, excludeUserIds = null) {
+  const raw = messageId ? store.getMessageRaw(messageId) : null;
+  let ids;
+  if (raw?.dropped) ids = [raw.user_id];
+  else ids = store.getMembers(chatId).map((m) => m.id);
+  if (excludeUserIds) ids = ids.filter((id) => !excludeUserIds.includes(id));
+  return ids;
 }
 
 export function emitMessageEdited(hub, chatId, message) {
-  const members = store.getMembers(chatId);
-  hub.sendToUsers(members.map((m) => m.id), { t: 'msg:edited', data: { message } });
+  const members = fanoutMembers(chatId, message?.id ?? null);
+  hub.sendToUsers(members, { t: 'msg:edited', data: { message } });
 }
 
 export function emitMessageDeleted(hub, chatId, messageId, byMod) {
-  const members = store.getMembers(chatId);
-  hub.sendToUsers(members.map((m) => m.id), { t: 'msg:deleted', data: { chatId, messageId, byMod } });
+  const members = fanoutMembers(chatId, messageId);
+  hub.sendToUsers(members, { t: 'msg:deleted', data: { chatId, messageId, byMod } });
 }
 
 export function emitRead(hub, chatId, userId, messageId) {
@@ -381,7 +404,7 @@ export function emitRead(hub, chatId, userId, messageId) {
 
 /** Edit a message — only the author may edit. */
 export function editMessageAs(user, messageId, rawContent, limits, e2eeMeta = null) {
-  const msg = store.getMessage(messageId);
+  const msg = store.getMessage(messageId, user.id); // authors can edit their own ghost messages
   if (!msg) throw new HttpError(404, 'Message not found');
   if (msg.author.id !== user.id) throw new HttpError(403, 'You can only edit your own messages');
   if (msg.enc) {
@@ -389,13 +412,13 @@ export function editMessageAs(user, messageId, rawContent, limits, e2eeMeta = nu
     const chat = store.getChat(msg.chatId);
     const enc = validateE2eeEnvelope(user, chat, { ...e2eeMeta, kid: msg.kid }, limits);
     store.editMessage(messageId, enc.ct, enc);
-    return store.getMessage(messageId);
+    return store.getMessage(messageId, user.id, { includeDropped: true });
   }
   const content = vStr(String(rawContent ?? ''), {
     label: 'Message', min: 1, max: limits?.maxMessageLength ?? 4000,
   });
   store.editMessage(messageId, content);
-  return store.getMessage(messageId);
+  return store.getMessage(messageId, user.id, { includeDropped: true });
 }
 
 /**
@@ -403,7 +426,7 @@ export function editMessageAs(user, messageId, rawContent, limits, e2eeMeta = nu
  * strictly-lower-role members; the group creator may delete inside their group.
  */
 export function deleteMessageAs(actor, messageId, roleLevelFn) {
-  const msg = store.getMessage(messageId);
+  const msg = store.getMessage(messageId, actor.id); // authors can delete their own ghost messages
   if (!msg) throw new HttpError(404, 'Message not found');
   const chat = store.getChat(msg.chatId);
   const isAuthor = msg.author.id === actor.id;
@@ -501,7 +524,7 @@ export function validateE2eeEnvelope(user, chat, { kid, iv, ct, sig }, limits) {
  * Returns { firstEpoch } so the route can announce it in the chat.
  */
 export function createKeyEpoch(user, chatId, epochRaw, wrapsRaw) {
-  const chat = checkCanPost(user, chatId); // member + not muted
+  const { chat, silentFor } = checkCanPost(user, chatId); // member + not muted
   if (chat.type !== 'dm') throw new HttpError(400, 'Encryption is only available in direct chats');
   const epoch = Number(epochRaw);
   const current = store.currentKeyEpoch(chatId);
@@ -532,5 +555,5 @@ export function createKeyEpoch(user, chatId, epochRaw, wrapsRaw) {
     if (!pubs[id]) throw new HttpError(400, `Member ${id} has not published an encryption identity`);
   }
   store.putChatKeyEpoch(chatId, epoch, user.id, me.dhHash, wraps);
-  return { chat, epoch, firstEpoch: epoch === 1 };
+  return { chat, epoch, firstEpoch: epoch === 1, silentFor };
 }

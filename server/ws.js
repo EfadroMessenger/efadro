@@ -55,9 +55,10 @@ export function createHub(server, cfg) {
   const icon = (video) => (video ? '📹' : '📞');
   const callLog = (c, text) => {
     try {
-      const sys = services.postSystemMessage(c.chatId, c.from, `${icon(c.video)} ${text}`.
-        slice(0, 290));
-      services.emitNewMessage(hub, c.chatId, sys);
+      // ghost calls (to someone who blocked the caller) log a "Missed call"
+      // the caller sees — but the log row itself is dropped for the blocker
+      const sys = services.postSystemMessage(c.chatId, c.from, `${icon(c.video)} ${text}`.slice(0, 290), { dropped: Boolean(c.ghost) });
+      services.emitNewMessage(hub, c.chatId, sys, null, { excludeUserIds: c.ghost ? [peerOf(c)] : null });
     } catch { /* call log failures must never crash the hub */ }
   };
 
@@ -83,7 +84,7 @@ export function createHub(server, cfg) {
       case 'lost': log = `${kind} · ${mmss} · connection lost`; break;
       default: log = `${kind} ended`; break;
     }
-    hub.sendToUsers(bothOf(c), { t: event, data: { callId: c.id, chatId: c.chatId, reason: ending, duration: dur } });
+    hub.sendToUsers(c.ghost ? [c.from] : bothOf(c), { t: event, data: { callId: c.id, chatId: c.chatId, reason: ending, duration: dur } });
     if (log) callLog(c, log);
   }
   const callOf = (callId) => calls.get(String(callId || '')) || null;
@@ -171,11 +172,12 @@ export function createHub(server, cfg) {
               return send(ws, { t: 'error', data: { message: 'You are sending messages too fast' } });
             }
             const e2ee = data.enc ? { kid: data.kid, iv: data.iv, ct: data.ct, sig: data.sig } : null;
-            const { chat, message } = services.postMessage(
+            const { chat, message, silentFor } = services.postMessage(
               freshUser, String(data.chatId || ''), e2ee ? data.ct : data.content, cfg.limits,
               { replyTo: data.replyTo, e2ee },
             );
-            services.emitNewMessage(hub, chat.id, message, data.clientId ?? null);
+            // silentFor: stealth blocking — the blocker gets no frame at all
+            services.emitNewMessage(hub, chat.id, message, data.clientId ?? null, { excludeUserIds: silentFor });
             break;
           }
 
@@ -211,18 +213,23 @@ export function createHub(server, cfg) {
             const { chatId, members } = dmMembersFor(freshUser, data.chatId);
             const peer = members.find((id) => id !== freshUser.id);
             if (!peer || peer === freshUser.id) throw Object.assign(new Error('You can’t call yourself'), { status: 400 });
-            if (store.isBlockedEitherWay(freshUser.id, peer)) {
-              return send(ws, { t: 'call:error', data: { message: 'You can’t call this user' } });
+            if (store.isBlocked(freshUser.id, peer)) {
+              // the blocker knows they blocked — a private, clear error
+              return send(ws, { t: 'call:error', data: { message: 'Unblock this user to call them' } });
             }
             const video = Boolean(data.video);
             if (activeCallOf.has(freshUser.id) || [...calls.values()].some((c) => c.chatId === chatId)) {
               return send(ws, { t: 'call:error', data: { message: 'Already in a call' } });
             }
+            // stealth blocking: the callee blocked the caller — the call still
+            // "rings" from the caller's side but the callee never hears it and
+            // simply never picks up (indistinguishable from being ignored)
+            const ghost = store.isBlocked(peer, freshUser.id);
             if (activeCallOf.has(peer)) {
               // callee is busy — tell the caller immediately, log a missed call
               const missed = {
                 id: crypto.randomUUID(), chatId, from: freshUser.id, members, video,
-                state: 'ringing', startedAt: 0, ringTimer: null, reasonWord: 'busy',
+                state: 'ringing', startedAt: 0, ringTimer: null, reasonWord: 'busy', ghost,
               };
               send(ws, { t: 'call:busy', data: { chatId } });
               callLog(missed, 'Missed call · busy');
@@ -230,14 +237,14 @@ export function createHub(server, cfg) {
             }
             const call = {
               id: crypto.randomUUID(), chatId, from: freshUser.id, members, video,
-              state: 'ringing', startedAt: 0, ringTimer: null,
+              state: 'ringing', startedAt: 0, ringTimer: null, ghost,
             };
             calls.set(call.id, call);
             activeCallOf.set(freshUser.id, call.id);
-            activeCallOf.set(peer, call.id);
+            if (!ghost) activeCallOf.set(peer, call.id);
             call.ringTimer = setTimeout(() => finishCall(call, 'missed'), ringTimeoutMs());
             // ring on every device of the peer; the caller gets the echo to build UI from
-            hub.sendToUser(peer, { t: 'call:ring', data: { call: publicCall(call) } });
+            if (!ghost) hub.sendToUser(peer, { t: 'call:ring', data: { call: publicCall(call) } });
             send(ws, { t: 'call:ringing', data: { call: publicCall(call) } });
             if (!hub.online(peer)) finishCall(call, 'offline');
             break;

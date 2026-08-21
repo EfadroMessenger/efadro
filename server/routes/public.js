@@ -3,7 +3,7 @@ import { asyncH, makeLimiter, safeEq, verifyTurnstile } from '../util.js';
 import { signGateToken } from '../auth.js';
 import { turnstileEffective } from '../config.js';
 
-export const APP_VERSION = '1.7.0';
+export const APP_VERSION = '1.8.0';
 
 export function publicInfo(cfg) {
   const ts = turnstileEffective(cfg);
