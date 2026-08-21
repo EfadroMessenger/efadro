@@ -6,11 +6,11 @@
 
 'use strict';
 
-import { EMOJI_CATEGORIES, SEARCH_INDEX, renderEmojiText, emojiOnly, emojiImg } from './emoji.js?v=1.6.2';
-import * as E2EE from './e2ee.js?v=1.6.2';
+import { EMOJI_CATEGORIES, SEARCH_INDEX, renderEmojiText, emojiOnly, emojiImg } from './emoji.js?v=1.7.0';
+import * as E2EE from './e2ee.js?v=1.7.0';
 
 /** Web-client build version — keep in sync with package.json / server APP_VERSION. */
-const CLIENT_VERSION = '1.6.2';
+const CLIENT_VERSION = '1.7.0';
 
 /* ----------------------------- helpers ----------------------------- */
 
@@ -1429,6 +1429,7 @@ function renderChatPane(chat) {
       <span class="read-status grow" id="read-status"></span>
     </div>
       <div id="mute-area"></div>
+      <div id="block-area"></div>
     <div class="composer" id="composer-wrap">
       <div id="reply-banner"></div>
       <div id="edit-banner"></div>
@@ -1564,10 +1565,10 @@ function renderChatPane(chat) {
   });
 
   renderMuteBanner();
+  renderBlockBanner();
 }
 
 /* --------------------------- pinned message --------------------------- */
-
 function renderPinnedBar(chat) {
   const bar = $('#pinned-bar');
   if (!bar) return;
@@ -1825,13 +1826,81 @@ document.addEventListener('keydown', (e) => {
 
 function renderMuteBanner() {
   const area = $('#mute-area');
-  const wrap = $('#composer-wrap');
-  if (!area || !wrap) return;
+  if (!area) return;
   const muted = (S.user.mutedUntil || 0) > Date.now();
   area.innerHTML = muted
     ? `<div class="mute-banner">${icons.warn}<span>You are muted until <b>${new Date(S.user.mutedUntil).toLocaleString()}</b>${S.user.muteReason ? ` — ${esc(S.user.muteReason)}` : ''}</span></div>`
     : '';
-  wrap.style.display = muted ? 'none' : '';
+  updateComposerVisibility();
+}
+
+/** The composer hides while the user is muted or while they blocked the open DM peer. */
+function updateComposerVisibility() {
+  const wrap = $('#composer-wrap');
+  if (!wrap) return;
+  const muted = (S.user.mutedUntil || 0) > Date.now();
+  const chat = getChat(S.activeChatId);
+  const peer = chat?.type === 'dm' ? chatPeer(chat) : null;
+  const blocked = Boolean(chat?.type === 'dm' && peer && chat.blocked);
+  wrap.style.display = muted || blocked ? 'none' : '';
+}
+
+/** Banner over the composer when *I* blocked my DM peer (the composer is useless: the server rejects sends). */
+function renderBlockBanner() {
+  const area = $('#block-area');
+  if (!area) return;
+  const chat = getChat(S.activeChatId);
+  const peer = chat?.type === 'dm' ? chatPeer(chat) : null;
+  const blocked = Boolean(chat?.type === 'dm' && peer && chat.blocked);
+  area.innerHTML = blocked
+    ? `<div class="mute-banner block-banner">${icons.ban}
+         <span>You blocked <b>@${esc(peer?.username || '')}</b> — they can’t message or call you.</span>
+         <button class="btn btn-sm" id="block-unblock-btn">${icons.refresh}<span>Unblock</span></button>
+       </div>`
+    : '';
+  updateComposerVisibility();
+  $('#block-unblock-btn', area)?.addEventListener('click', async () => {
+    if (!peer) return;
+    try {
+      await api(`/api/users/${encodeURIComponent(peer.id)}/block`, { method: 'DELETE' });
+      applyBlockState(peer.id, false);
+      toast(`Unblocked @${peer.username}`, 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+/** Update the local DM state after a block/unblock (WS pushes it too; this covers REST-only moments). */
+function applyBlockState(peerId, blocked) {
+  const chat = S.chats.find((c) => c.type === 'dm' && c.members?.some((m) => m.id === peerId) && c.members?.some((m) => m.id === S.user.id));
+  if (chat) {
+    chat.blocked = blocked;
+    if (S.activeChatId === chat.id) renderBlockBanner();
+    renderChatList($('#chat-filter')?.value || '');
+  }
+}
+
+async function toggleBlockUser(peer, { ask = true } = {}) {
+  if (!peer || peer.id === S.user.id) return false;
+  const dm = S.chats.find((c) => c.type === 'dm' && c.members?.some((m) => m.id === peer.id));
+  const currentlyBlocked = peer.blocked !== undefined ? Boolean(peer.blocked) : Boolean(dm?.blocked);
+  if (!currentlyBlocked && ask) {
+    const yes = await confirmModal({
+      title: `Block @${peer.username}?`,
+      body: 'They won’t be able to send you messages or call you in this direct chat. They are not notified.',
+      confirmText: 'Block',
+      danger: true,
+    });
+    if (!yes) return false;
+  }
+  try {
+    await api(`/api/users/${encodeURIComponent(peer.id)}/block`, { method: currentlyBlocked ? 'DELETE' : 'POST' });
+    applyBlockState(peer.id, !currentlyBlocked);
+    toast(currentlyBlocked ? `Unblocked @${peer.username}` : `Blocked @${peer.username}`, 'success');
+    return true;
+  } catch (e) {
+    toast(e.message, 'error');
+    return false;
+  }
 }
 
 /* ----------------------------- messages ------------------------------ */
@@ -2595,6 +2664,7 @@ async function startCall(chatId, { video = false } = {}) {
   if (chat.type === 'group') return toast('Group calls are not supported yet — open a 1:1 chat to make a call', 'error', 4200);
   const peer = chatPeer(chat);
   if (!peer) return toast('Saved Messages can’t be called — open a 1:1 chat to make a call', 'error', 4200);
+  if (chat.blocked) return toast('Unblock this user to call them', 'error', 4200);
   if (!window.RTCPeerConnection || !navigator.mediaDevices?.getUserMedia) {
     return toast('Calls need mic/camera access — open efadro via HTTPS (or localhost) so the browser allows it', 'error', 5000);
   }
@@ -2716,6 +2786,10 @@ function sendTyping() {
 async function sendCurrentMessage() {
   const ta = $('#composer-input');
   if (!ta || !S.activeChatId) return;
+  const chat0 = getChat(S.activeChatId);
+  if (chat0?.type === 'dm' && chat0.blocked) {
+    return toast('You blocked this user — unblock them to send messages', 'error', 4200);
+  }
   const content = ta.value.trim();
   if (!content) return;
 
@@ -3710,6 +3784,7 @@ function handleWsEvent({ t, data = {} }) {
         updateChatSub();
         renderPinnedBar(c);
         renderMuteBanner();
+        renderBlockBanner();
         renderMessages(data.chat.id, { keepScroll: true });
       }
       if (t === 'chat:new') toast(`You were added to “${chatTitle(data.chat)}”`, 'info', 2600);
@@ -3806,6 +3881,13 @@ function handleWsEvent({ t, data = {} }) {
 
     case 'error': {
       if (data.message) toast(data.message, 'error');
+      // A failed send (blocked, muted, kicked…) — flip the optimistic bubble to "failed"
+      if (data.clientId && data.chatId) {
+        const st = S.msg[data.chatId];
+        const msg = st?.items.find((m) => String(m.id) === String(data.clientId));
+        if (msg) msg.failed = true;
+        $(`.msg-row[data-msg-id="${CSS.escape(data.clientId)}"]`)?.classList.add('failed');
+      }
       break;
     }
   }
@@ -4009,7 +4091,11 @@ function openMembersDrawer(chatId) {
         <div class="row mb-3">
           <button class="btn btn-sm grow" id="drawer-add">${icons.plus}<span>Add members</span></button>
           <button class="btn btn-sm grow" id="drawer-rename">${icons.pencil}<span>Rename</span></button>
-        </div>` : peer ? `<button class="btn btn-block btn-sm mb-3" id="drawer-view-user">${icons.user}<span>View profile</span></button>` : ''}
+        </div>` : peer ? `
+        <div class="row mb-3">
+          <button class="btn btn-sm grow" id="drawer-view-user">${icons.user}<span>View profile</span></button>
+          <button class="btn btn-sm grow ${chat.blocked ? '' : 'btn-danger'}" id="drawer-block">${icons.ban}<span>${chat.blocked ? 'Unblock' : 'Block'}</span></button>
+        </div>` : ''}
       ${chat.type === 'group' && (isCreator || roleLevel(S.user.role) >= 1) ? `
         <div class="list-label" style="padding:4px 4px 8px">Invite link</div>
         <div id="invite-slot" class="invite-slot"><span class="muted small">Loading…</span></div>` : ''}
@@ -4058,6 +4144,11 @@ function openMembersDrawer(chatId) {
   $$('#drawer-view-user', drawer).forEach((b) => b.addEventListener('click', () => {
     if (peer) openProfile(peer.id);
   }));
+  $('#drawer-block', drawer)?.addEventListener('click', async () => {
+    if (!peer) return;
+    const done = await toggleBlockUser(peer, { ask: !chat.blocked });
+    if (done) openMembersDrawer(chatId); // re-render the drawer with fresh state
+  });
   $$('[data-kick-member]', drawer).forEach((b) => b.addEventListener('click', async () => {
     const uid = b.dataset.kickMember;
     const m = chat.members.find((x) => x.id === uid);
@@ -4106,10 +4197,15 @@ async function openProfile(userId) {
       ${isSelf
         ? `<button class="btn" id="pf-edit">${icons.pencil}<span>Edit profile</span></button>`
         : `<button class="btn btn-primary" id="pf-msg">${icons.send}<span>Message</span></button>`}
+      ${!isSelf ? `<button class="btn btn-ghost" id="pf-block">${icons.ban}<span>${u.blocked ? 'Unblock' : 'Block'}</span></button>` : ''}
       ${canModerate ? `<button class="btn btn-ghost" id="pf-mod">${icons.shield}<span>Moderate</span></button>` : ''}
     </div>
   `, {
     onMount(root, close) {
+      $('#pf-block', root)?.addEventListener('click', async () => {
+        const done = await toggleBlockUser(u, { ask: !u.blocked });
+        if (done) { close(); openProfile(u.id); } // re-render with the new state
+      });
       $('#pf-msg', root)?.addEventListener('click', async () => {
         try {
           const { chat } = await api('/api/chats/dm', { method: 'POST', body: { userId: u.id } });
@@ -4330,6 +4426,38 @@ function openAddMembers(chatId) {
 
 /* ------------------------------ settings ------------------------------ */
 
+/** Settings → Privacy: everyone I've blocked, with one-tap unblock. */
+function loadBlockedUsersCard(root) {
+  const slot = $('#set-blocks', root);
+  if (!slot) return;
+  api('/api/users/blocks').then(({ users }) => {
+    if (!slot.isConnected) return;
+    const empty = `<div class="small faint">You haven’t blocked anyone.</div>`;
+    if (!users.length) { slot.innerHTML = empty; return; }
+    slot.innerHTML = users.map((u) => `
+      <div class="member-row">
+        ${avatarHtml(u, 'sm', false)}
+        <div class="grow" style="min-width:0">
+          <div class="m-name">${esc(u.displayName)}</div>
+          <div class="m-status">@${esc(u.username)}</div>
+        </div>
+        <button class="btn btn-sm" data-unblock="${esc(u.id)}">${icons.refresh}<span>Unblock</span></button>
+      </div>`).join('');
+    $$('[data-unblock]', slot).forEach((b) => b.addEventListener('click', async () => {
+      const uid = b.dataset.unblock;
+      try {
+        await api(`/api/users/${encodeURIComponent(uid)}/block`, { method: 'DELETE' });
+        b.closest('.member-row')?.remove();
+        if (!$$('.member-row', slot).length) slot.innerHTML = empty;
+        applyBlockState(uid, false);
+        toast('Unblocked', 'success', 1500);
+      } catch (e) { toast(e.message, 'error'); }
+    }));
+  }).catch((e) => {
+    if (slot.isConnected) slot.innerHTML = `<div class="small faint">${esc(e.message)}</div>`;
+  });
+}
+
 function openSettings() {
   const accents = ['#6366f1', '#22d3ee', '#f472b6', '#fbbf24', '#34d399'];
   openModal(`
@@ -4378,6 +4506,13 @@ function openSettings() {
     </div>
 
     <div class="card">
+      <h3>Privacy</h3>
+      <div class="small faint mb-3">Blocked users can’t send you direct messages or call you. Blocking is private — nobody is notified, and shared group chats are unaffected.</div>
+      <div class="list-label" style="padding:4px 4px 8px">Blocked users</div>
+      <div id="set-blocks"><span class="spinner"></span></div>
+    </div>
+
+    <div class="card">
       <h3>Two-factor authentication ${S.user.totpEnabled ? '<span class="pill ok">enabled</span>' : '<span class="pill warn">off</span>'}</h3>
       ${S.user.totpEnabled ? `
         <div class="small faint mb-3">Your account asks for an authenticator-app code at sign-in.
@@ -4399,6 +4534,7 @@ function openSettings() {
   `, {
     onMount(root, close) {
       bindE2EECard(root);
+      loadBlockedUsersCard(root);
       const avInput = $('#set-avatar-input', root);
       $('#set-avatar-btn', root).onclick = () => avInput.click();
       avInput.onchange = () => {

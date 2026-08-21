@@ -165,6 +165,17 @@ CREATE TABLE IF NOT EXISTS invites (
 CREATE INDEX IF NOT EXISTS idx_invites_chat ON invites(chat_id);
 `);
 
+/* v1.7.0: user blocking — a row means user_id blocked blocked_id (DM-scoped) */
+db.exec(`
+CREATE TABLE IF NOT EXISTS user_blocks (
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  blocked_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, blocked_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id);
+`);
+
 /* v1.5.0: end-to-end encryption — identity keys, wrapped chat keys, transfers */
 ensureColumn('messages', 'enc INTEGER NOT NULL DEFAULT 0', 'enc');
 ensureColumn('messages', 'kid INTEGER', 'kid'); // chat-key epoch used for ciphertext

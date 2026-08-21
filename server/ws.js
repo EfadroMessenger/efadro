@@ -183,9 +183,13 @@ export function createHub(server, cfg) {
             if (limited(typingTimes, 6, 3000)) return;
             const chatId = String(data.chatId || '');
             if (!store.isMember(chatId, freshUser.id)) return;
-            const members = store.getMembers(chatId);
+            const chat = store.getChat(chatId);
+            const members = store.getMembers(chatId).filter((m) => {
+              if (m.id === freshUser.id) return false;
+              // no typing signals across a block
+              return !(chat?.type === 'dm' && store.isBlockedEitherWay(freshUser.id, m.id));
+            });
             for (const m of members) {
-              if (m.id === freshUser.id) continue;
               hub.sendToUser(m.id, {
                 t: 'typing',
                 data: { chatId, user: store.publicUser(freshUser), typing: Boolean(data.typing) },
@@ -207,6 +211,9 @@ export function createHub(server, cfg) {
             const { chatId, members } = dmMembersFor(freshUser, data.chatId);
             const peer = members.find((id) => id !== freshUser.id);
             if (!peer || peer === freshUser.id) throw Object.assign(new Error('You can’t call yourself'), { status: 400 });
+            if (store.isBlockedEitherWay(freshUser.id, peer)) {
+              return send(ws, { t: 'call:error', data: { message: 'You can’t call this user' } });
+            }
             const video = Boolean(data.video);
             if (activeCallOf.has(freshUser.id) || [...calls.values()].some((c) => c.chatId === chatId)) {
               return send(ws, { t: 'call:error', data: { message: 'Already in a call' } });
@@ -290,7 +297,12 @@ export function createHub(server, cfg) {
             send(ws, { t: 'error', data: { message: `Unknown frame type: ${String(t)}` } });
         }
       } catch (e) {
-        send(ws, { t: 'error', data: { message: e.message || 'Error', status: e.status || 500 } });
+        // msg:send failures echo the client's own bubble id so the optimistic
+        // row can flip to "failed" instead of hanging on "sending…"
+        const ctx = t === 'msg:send'
+          ? { chatId: String(data.chatId || ''), clientId: data.clientId ? String(data.clientId) : null }
+          : {};
+        send(ws, { t: 'error', data: { message: e.message || 'Error', status: e.status || 500, ...ctx } });
       }
     });
 

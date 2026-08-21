@@ -37,10 +37,40 @@ export const touchLastSeen = (id, ts = now()) => db.prepare('UPDATE users SET la
 
 export function searchUsers(q, limit = 20, excludeId = null) {
   const like = `%${String(q || '').trim()}%`;
+  // People who blocked the searcher stay invisible to them in user search
   return db.prepare(`SELECT * FROM users
-                     WHERE banned = 0 AND (username LIKE ? OR display_name LIKE ?) ${excludeId ? 'AND id != ?' : ''}
+                     WHERE banned = 0 AND (username LIKE ? OR display_name LIKE ?)
+                     ${excludeId ? 'AND id != ? AND id NOT IN (SELECT user_id FROM user_blocks WHERE blocked_id = ?)' : ''}
                      ORDER BY username COLLATE NOCASE LIMIT ?`)
-    .all(like, like, ...(excludeId ? [excludeId] : []), limit);
+    .all(like, like, ...(excludeId ? [excludeId, excludeId] : []), limit);
+}
+
+/* ============================= BLOCKS ============================= */
+
+/** True if `aId` blocked `bId`. */
+export const isBlocked = (aId, bId) =>
+  Boolean(db.prepare('SELECT 1 FROM user_blocks WHERE user_id = ? AND blocked_id = ?').get(aId, bId));
+
+/** True if either of the two users blocked the other. */
+export function isBlockedEitherWay(aId, bId) {
+  return Boolean(db.prepare('SELECT 1 FROM user_blocks WHERE (user_id = ? AND blocked_id = ?) OR (user_id = ? AND blocked_id = ?)')
+    .get(aId, bId, bId, aId));
+}
+
+export function blockUser(userId, blockedId) {
+  db.prepare('INSERT OR IGNORE INTO user_blocks (user_id, blocked_id, created_at) VALUES (?,?,?)')
+    .run(userId, blockedId, now());
+}
+
+export function unblockUser(userId, blockedId) {
+  db.prepare('DELETE FROM user_blocks WHERE user_id = ? AND blocked_id = ?').run(userId, blockedId);
+}
+
+/** Everyone the user has blocked, newest first (for the Settings list). */
+export function listBlockedUsers(userId) {
+  return db.prepare(`SELECT u.*, b.created_at AS blocked_at
+                     FROM user_blocks b JOIN users u ON u.id = b.blocked_id
+                     WHERE b.user_id = ? ORDER BY b.created_at DESC`).all(userId);
 }
 
 export function listUsers({ q = '', limit = 300, offset = 0 } = {}) {
@@ -326,6 +356,8 @@ export function chatPayloadFor(chatId, userId) {
   const lm = db.prepare(`${MESSAGE_VIEW}
     WHERE m.chat_id = ? AND m.deleted = 0 AND m.id = (SELECT MAX(id) FROM messages WHERE chat_id = ? AND deleted = 0)`)
     .get(chatId, chatId);
+  const members = getMembers(chatId);
+  const peer = c.type === 'dm' ? members.find((m) => m.id !== userId) : null;
   return {
     id: c.id,
     type: c.type,
@@ -334,12 +366,14 @@ export function chatPayloadFor(chatId, userId) {
     createdAt: c.created_at,
     unread,
     unreadMentions: cm.unread_mentions,
+    // viewer-scoped only: true iff *I* blocked my DM peer (never leaks the other direction)
+    blocked: peer ? isBlocked(userId, peer.id) : false,
     e2ee: Boolean(db.prepare('SELECT 1 FROM chat_keys WHERE chat_id = ? LIMIT 1').get(chatId)),
     prefs: getChatPrefs(userId, chatId),
     myLastRead: cm.last_read,
     lastMessage: lm ? mapMessageRow(lm) : null,
     pinnedMessage: c.pinned_message ? getMessage(c.pinned_message, userId) : null,
-    members: getMembers(chatId).map((m) => ({ ...publicUser(m), lastRead: m.last_read })),
+    members: members.map((m) => ({ ...publicUser(m), lastRead: m.last_read })),
   };
 }
 

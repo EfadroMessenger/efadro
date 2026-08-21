@@ -551,6 +551,63 @@ try {
   ok((await req('DELETE', `/api/chats/${grp.id}/invite`, { token: alice.token })).status === 200, 'revoke works');
   ok((await req('POST', `/api/invites/${rot.json.invite.token}/join`, { token: grace.token })).status === 404, 'revoked link is dead');
 
+  console.log('• User blocking (v1.7)');
+  {
+    const hana = await signup('hana');
+    const ivan = await signup('ivan');
+    const dmDE = (await req('POST', '/api/chats/dm', { token: hana.token, body: { userId: ivan.user.id } })).json.chat;
+    ok(dmDE?.type === 'dm', 'hana opens a DM with ivan');
+    ok((await req('POST', `/api/chats/${dmDE.id}/messages`, { token: ivan.token, body: { content: 'hi hana' } })).status === 201, 'ivan messages hana before any block');
+
+    ok((await req('POST', `/api/users/${ivan.user.id}/block`, { token: hana.token, body: {} })).status === 200, 'hana blocks ivan');
+    const prof = await req('GET', `/api/users/${ivan.user.id}/profile`, { token: hana.token });
+    ok(prof.json.user.blocked === true, 'profile exposes my block state to me');
+    const blocksList = await req('GET', '/api/users/blocks', { token: hana.token });
+    ok(blocksList.json.users?.length === 1 && blocksList.json.users[0].username === 'ivan', 'blocks list shows ivan');
+
+    const eSend = await req('POST', `/api/chats/${dmDE.id}/messages`, { token: ivan.token, body: { content: 'hello?' } });
+    ok(eSend.status === 403 && eSend.json.code === 'blocked', 'blocked user cannot send in the DM');
+    const dSend = await req('POST', `/api/chats/${dmDE.id}/messages`, { token: hana.token, body: { content: 'sorry' } });
+    ok(dSend.status === 403, 'blocker cannot send either (either-way cutoff)');
+
+    const daveChats = await req('GET', '/api/chats', { token: hana.token });
+    ok(daveChats.json.chats.find((c) => c.id === dmDE.id)?.blocked === true, 'blocker sees the blocked flag on the chat payload');
+    const erinChats = await req('GET', '/api/chats', { token: ivan.token });
+    ok(erinChats.json.chats.find((c) => c.id === dmDE.id)?.blocked === false, 'blocked user gets no leak in their payload');
+
+    ok((await req('POST', '/api/chats/dm', { token: ivan.token, body: { userId: hana.user.id } })).status === 403, 'blocked user cannot reopen the DM');
+    const dDm = await req('POST', '/api/chats/dm', { token: hana.token, body: { userId: ivan.user.id } });
+    ok(dDm.status === 403 && dDm.json.code === 'blocked', 'blocker is told to unblock first');
+
+    const erinSearch = await req('GET', '/api/users/search?q=hana', { token: ivan.token });
+    ok(erinSearch.json.users?.length === 0, 'blocked user cannot find the blocker in user search');
+    const daveSearch = await req('GET', '/api/users/search?q=ivan', { token: hana.token });
+    ok(daveSearch.json.users?.length === 1, 'blocker can still find the blocked user (to unblock)');
+
+    ok((await req('POST', `/api/users/${hana.user.id}/block`, { token: hana.token, body: {} })).status === 400, 'cannot block yourself');
+
+    // WS: blocked user cannot call; failed sends echo the clientId for the UI
+    const wD = await wsConnect(hana.token);
+    const wE = await wsConnect(ivan.token);
+    const errCall = waitFrame(wE, 'call:error');
+    wE.send(JSON.stringify({ t: 'call:invite', data: { chatId: dmDE.id, video: false } }));
+    ok(/call this user/i.test((await errCall).data?.message || ''), 'blocked user cannot call the blocker');
+    const errSend = waitFrame(wE, 'error', 4000, (f) => f.data?.clientId === 'test-cid');
+    wE.send(JSON.stringify({ t: 'msg:send', data: { chatId: dmDE.id, content: 'ws?', clientId: 'test-cid' } }));
+    const errSendF = await errSend;
+    ok(errSendF.data?.status === 403 && errSendF.data?.chatId === dmDE.id, 'failed WS send echoes chatId + clientId for the optimistic bubble');
+    // typing signals don't cross a block
+    wE.send(JSON.stringify({ t: 'typing', data: { chatId: dmDE.id, typing: true } }));
+    await sleep(300);
+    ok(!wD.frames.some((f) => f.t === 'typing' && f.data?.chatId === dmDE.id), 'typing indicators are not relayed across a block');
+    wD.close(); wE.close();
+
+    ok((await req('DELETE', `/api/users/${ivan.user.id}/block`, { token: hana.token })).status === 200, 'hana unblocks ivan');
+    ok((await req('POST', `/api/chats/${dmDE.id}/messages`, { token: ivan.token, body: { content: 'we good?' } })).status === 201, 'messages flow again after unblock');
+    const blocksAfter = await req('GET', '/api/users/blocks', { token: hana.token });
+    ok(blocksAfter.json.users?.length === 0, 'blocks list is empty after unblock');
+  }
+
   console.log('• End-to-end encryption (v1.5)');
   // alice & bob get real WebCrypto identities; their private keys live only in this test process
   const mkIdentity = async () => {
