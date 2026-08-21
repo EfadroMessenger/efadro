@@ -1,6 +1,6 @@
 {
   "name": "efadro",
-  "version": "1.6.2",
+  "version": "1.7.0",
   "description": "efadro — a self-hosted real-time messenger with roles, moderation and Cloudflare Turnstile support",
   "type": "module",
   "main": "server/index.js",

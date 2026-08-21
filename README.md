@@ -63,6 +63,7 @@ EFADRO BETA TEST STARTS AUG 20
 
 **Security extras**
 - **Two-factor authentication (TOTP)**: QR-code setup with any authenticator app (Google Authenticator, Aegis, 1Password…), 8 one-time backup codes, regenerate/disable flows — login becomes a two-step process with a short-lived pending token
+- **Blocking users (v1.7.0)**: block anyone from their profile card, the DM drawer or a message — a red “You blocked @user” banner takes over the composer with a one-tap *Unblock*, and Settings → **Privacy** lists everyone you’ve blocked. Server-enforced on every transport (REST, WebSocket, file & voice uploads, polls, forwards, calls): once either side blocks, neither can send in that DM or ring the other, the blocked user can’t re-open the chat or find you in user search, and typing indicators / read receipts stop crossing the block. Blocking is private (nobody is notified), instant to undo, and shared group chats are unaffected — group co-membership never changes. Honest trade-off: the rejected sender sees a “You can’t send messages to this user” error (the standard tell-tale), and presence/last-seen of a blocked peer stays visible inside existing chats
 
 **Roles & moderation (server-enforced hierarchy)**
 | Role | Level | Powers |
@@ -349,7 +350,7 @@ efadro/
 ## 🧪 Testing
 
 ```bash
-npm test            # boots an isolated server and runs 263 end-to-end assertions
+npm test            # boots an isolated server and runs 283 end-to-end assertions
 ```
 
 The suite covers the gate flow, auth, DMs/groups, WebSocket events, the full
@@ -373,7 +374,10 @@ payload unwrapping, one-pending & 10-minute-TTL rules), server-only mode
 (JSON landing page, web client not mounted, gate/signup/messaging over REST)
 and calls (config endpoint & auth, invite→ring→accept→SDP/ICE relay→hangup
 with a duration row, decline/cancel flows, busy detection, disabled mode
-rejection, ring-timeout expiry with a missed-call row).
+rejection, ring-timeout expiry with a missed-call row), and user blocking
+(block/unblock lifecycle, either-way DM cutoff over REST and WS, blocked
+calls, search invisibility, no payload leak to the blocked side, typing/
+read-receipt suppression, WS send errors echoing the client bubble id).
 
 There are also interactive Playwright suites that drive the real UI in a
 browser (used during development, not part of `npm test`):
@@ -432,6 +436,12 @@ POST /api/messages/:id/vote         vote {optionId} / change / retract {optionId
 GET|POST|DELETE /api/chats/:id/invite   read / create-or-rotate / revoke the group
                                     invite link (creator or staff)
 POST /api/invites/:token/join       join a group via an invite-link token
+
+GET  /api/users/search?q=           find users (hides people who blocked you)
+GET  /api/users/:id/profile         public profile (+ my block state for them)
+GET  /api/users/blocks              everyone I blocked (Settings → Privacy)
+POST /api/users/:id/block           block (cuts the DM off in both directions)
+DELETE /api/users/:id/block         unblock — messages and calls flow again
 
 GET  /api/e2ee/identity/me          my published public identity bundle
 GET  /api/e2ee/identity?ids=a,b,c   public identity directory (batch, ≤100)

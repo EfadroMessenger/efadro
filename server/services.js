@@ -16,6 +16,12 @@ function checkCanPost(user, chatId) {
       code: 'muted', mutedUntil: user.muted_until, reason: user.mute_reason,
     });
   }
+  if (chat.type === 'dm') {
+    const peer = store.getMembers(chatId).find((m) => m.id !== user.id);
+    if (peer && store.isBlockedEitherWay(user.id, peer.id)) {
+      throw new HttpError(403, 'You can’t send messages to this user', { code: 'blocked' });
+    }
+  }
   return chat;
 }
 
@@ -56,6 +62,44 @@ export function mentionJumpTarget(user, chatId) {
 export function updateChatPrefs(user, chatId, patch) {
   if (!store.getChat(chatId) || !store.isMember(chatId, user.id)) throw new HttpError(404, 'Chat not found');
   return store.setChatPrefs(user.id, chatId, patch);
+}
+
+/* ------------------------------ blocking (v1.7) ------------------------------ */
+
+/** Block a user: they can no longer DM or call you (either direction is cut off). */
+export function blockUserAs(user, targetId, hub) {
+  if (targetId === user.id) throw new HttpError(400, 'You cannot block yourself');
+  const target = store.getUserById(targetId);
+  if (!target) throw new HttpError(404, 'User not found');
+  store.blockUser(user.id, targetId);
+  // the blocker's own view of the DM changes (composer banner) — push a fresh payload
+  if (hub) {
+    const key = [user.id, targetId].sort().join(':');
+    const chat = store.getDmByKey(key);
+    if (chat) emitChatToMembers(hub, chat.id, { onlyUserIds: [user.id] });
+  }
+  return { ok: true };
+}
+
+/** Undo a block; DMs flow again immediately. */
+export function unblockUserAs(user, targetId, hub) {
+  const target = store.getUserById(targetId);
+  if (!target) throw new HttpError(404, 'User not found');
+  store.unblockUser(user.id, targetId);
+  if (hub) {
+    const key = [user.id, targetId].sort().join(':');
+    const chat = store.getDmByKey(key);
+    if (chat) emitChatToMembers(hub, chat.id, { onlyUserIds: [user.id] });
+  }
+  return { ok: true };
+}
+
+/** Everyone the user has blocked (Settings → Privacy). */
+export function listBlockedUsersAs(user) {
+  return store.listBlockedUsers(user.id).map((u) => ({
+    ...store.publicUser(u),
+    blockedAt: u.blocked_at,
+  }));
 }
 
 /* ------------------------------ polls (v1.4) ------------------------------ */
@@ -327,7 +371,12 @@ export function emitMessageDeleted(hub, chatId, messageId, byMod) {
 
 export function emitRead(hub, chatId, userId, messageId) {
   const members = store.getMembers(chatId);
-  hub.sendToUsers(members.map((m) => m.id), { t: 'read', data: { chatId, userId, messageId } });
+  // No read receipts across a block — silence in both directions
+  const chat = store.getChat(chatId);
+  const recipients = chat?.type === 'dm'
+    ? members.filter((m) => m.id === userId || !store.isBlockedEitherWay(userId, m.id))
+    : members;
+  hub.sendToUsers(recipients.map((m) => m.id), { t: 'read', data: { chatId, userId, messageId } });
 }
 
 /** Edit a message — only the author may edit. */

@@ -44,6 +44,12 @@ export function chatsRouter(cfg, hub) {
     const target = store.getUserById(targetId);
     if (!target) throw new HttpError(404, 'User not found');
     if (target.banned) throw new HttpError(403, 'This user is banned');
+    if (store.isBlocked(req.user.id, targetId)) {
+      throw new HttpError(403, 'You blocked this user — unblock them to chat', { code: 'blocked' });
+    }
+    if (store.isBlocked(targetId, req.user.id)) {
+      throw new HttpError(403, 'You can’t message this user', { code: 'blocked' });
+    }
     const key = [req.user.id, targetId].sort().join(':');
     let chat = store.getDmByKey(key);
     if (!chat) {
