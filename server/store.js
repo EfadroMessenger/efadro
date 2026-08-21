@@ -37,12 +37,12 @@ export const touchLastSeen = (id, ts = now()) => db.prepare('UPDATE users SET la
 
 export function searchUsers(q, limit = 20, excludeId = null) {
   const like = `%${String(q || '').trim()}%`;
-  // People who blocked the searcher stay invisible to them in user search
+  // NOTE: users who blocked the searcher still show up (v1.8 stealth blocking —
+  // hiding them would be an obvious tell that something changed).
   return db.prepare(`SELECT * FROM users
-                     WHERE banned = 0 AND (username LIKE ? OR display_name LIKE ?)
-                     ${excludeId ? 'AND id != ? AND id NOT IN (SELECT user_id FROM user_blocks WHERE blocked_id = ?)' : ''}
+                     WHERE banned = 0 AND (username LIKE ? OR display_name LIKE ?) ${excludeId ? 'AND id != ?' : ''}
                      ORDER BY username COLLATE NOCASE LIMIT ?`)
-    .all(like, like, ...(excludeId ? [excludeId, excludeId] : []), limit);
+    .all(like, like, ...(excludeId ? [excludeId] : []), limit);
 }
 
 /* ============================= BLOCKS ============================= */
@@ -219,12 +219,13 @@ function mapMessageRow(r, reactions = undefined) {
   };
 }
 
-export function createMessage({ chatId, userId, content, replyTo = null, fwdFrom = null, system = false, enc = null }) {
-  const res = db.prepare(`INSERT INTO messages (chat_id, user_id, content, created_at, reply_to, fwd_from, system, enc, kid, iv, sig)
-                          VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+export function createMessage({ chatId, userId, content, replyTo = null, fwdFrom = null, system = false, enc = null, dropped = false }) {
+  const res = db.prepare(`INSERT INTO messages (chat_id, user_id, content, created_at, reply_to, fwd_from, system, enc, kid, iv, sig, dropped)
+                          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(chatId, userId, content, now(), replyTo, fwdFrom, system ? 1 : 0,
-      enc ? 1 : 0, enc?.kid ?? null, enc?.iv ?? null, enc?.sig ?? null);
-  return getMessage(res.lastInsertRowid);
+      enc ? 1 : 0, enc?.kid ?? null, enc?.iv ?? null, enc?.sig ?? null, dropped ? 1 : 0);
+  // includeDropped: the author's own view is built straight after creation
+  return getMessage(res.lastInsertRowid, userId, { includeDropped: true });
 }
 
 export const maxMessageId = (chatId) =>
@@ -237,13 +238,21 @@ export function searchMessages(chatId, q, limit = 50) {
                             m.user_id AS authorId, u.display_name AS authorName,
                             EXISTS(SELECT 1 FROM files f WHERE f.message_id = m.id) AS hasFile
                      FROM messages m JOIN users u ON u.id = m.user_id
-                     WHERE m.chat_id = ? AND m.deleted = 0 AND m.system = 0 AND m.enc = 0
+                     WHERE m.chat_id = ? AND m.deleted = 0 AND m.system = 0 AND m.enc = 0 AND m.dropped = 0
                        AND m.content LIKE ? ESCAPE '\\'
                      ORDER BY m.id DESC LIMIT ?`).all(chatId, like, limit);
 }
 
-export function getMessage(id, viewerId = null) {
-  const r = db.prepare(`${MESSAGE_VIEW} WHERE m.id = ? AND m.deleted = 0`).get(id);
+/**
+ * Ghost messages (dropped=1, sent by a user the peer blocked) are visible to
+ * their author only — everyone else, the blocker included, never sees them.
+ * Pass `includeDropped` when the author's own view is being built right after
+ * creation (their client must receive the message it just posted).
+ */
+export function getMessage(id, viewerId = null, { includeDropped = false } = {}) {
+  const r = db.prepare(`${MESSAGE_VIEW}
+    WHERE m.id = ? AND m.deleted = 0 AND (m.dropped = 0 OR m.user_id = ? ${includeDropped ? 'OR m.dropped = 1' : ''})`)
+    .get(id, viewerId);
   if (!r) return null;
   const msg = mapMessageRow(r, viewerId ? reactionSummary(id, viewerId) : []);
   if (hasPoll(id)) msg.poll = getPoll(id, viewerId);
@@ -251,9 +260,11 @@ export function getMessage(id, viewerId = null) {
 }
 
 export function listMessages(chatId, { before = Infinity, limit = 40, viewerId = null } = {}) {
+  // Ghost messages show up only in the author's own window — one clause keeps
+  // pagination correct for every viewer.
   const rows = db.prepare(`${MESSAGE_VIEW}
-    WHERE m.chat_id = ? AND m.deleted = 0 AND m.id < ?
-    ORDER BY m.id DESC LIMIT ?`).all(chatId, before, limit + 1);
+    WHERE m.chat_id = ? AND m.deleted = 0 AND (m.dropped = 0 OR m.user_id = ?) AND m.id < ?
+    ORDER BY m.id DESC LIMIT ?`).all(chatId, viewerId, before, limit + 1);
   const hasMore = rows.length > limit;
   const slice = rows.slice(0, limit).reverse();
   const rmap = viewerId ? reactionsMap(slice.map((r) => r.id), viewerId) : new Map();
@@ -351,11 +362,12 @@ export function chatPayloadFor(chatId, userId) {
   const cm = db.prepare('SELECT last_read, unread_mentions FROM chat_members WHERE chat_id = ? AND user_id = ?').get(chatId, userId);
   if (!cm) return null;
   const unread = db.prepare(`SELECT COUNT(*) AS c FROM messages
-                             WHERE chat_id = ? AND deleted = 0 AND id > ? AND user_id != ?`)
+                             WHERE chat_id = ? AND deleted = 0 AND dropped = 0 AND id > ? AND user_id != ?`)
     .get(chatId, cm.last_read, userId).c;
   const lm = db.prepare(`${MESSAGE_VIEW}
-    WHERE m.chat_id = ? AND m.deleted = 0 AND m.id = (SELECT MAX(id) FROM messages WHERE chat_id = ? AND deleted = 0)`)
-    .get(chatId, chatId);
+    WHERE m.chat_id = ? AND m.deleted = 0 AND (m.dropped = 0 OR m.user_id = ?)
+      AND m.id = (SELECT MAX(id) FROM messages WHERE chat_id = ? AND deleted = 0 AND (dropped = 0 OR user_id = ?))`)
+    .get(chatId, userId, chatId, userId);
   const members = getMembers(chatId);
   const peer = c.type === 'dm' ? members.find((m) => m.id !== userId) : null;
   return {
@@ -380,9 +392,14 @@ export function chatPayloadFor(chatId, userId) {
 export function listChatsForUser(userId) {
   const rows = db.prepare(`SELECT c.id FROM chats c
                            JOIN chat_members cm ON cm.chat_id = c.id AND cm.user_id = ?
-                           ORDER BY COALESCE((SELECT MAX(created_at) FROM messages WHERE chat_id = c.id AND deleted = 0), c.created_at) DESC`)
-    .all(userId);
-  return rows.map((r) => chatPayloadFor(r.id, userId)).filter(Boolean);
+                           ORDER BY COALESCE((SELECT MAX(created_at) FROM messages
+                                              WHERE chat_id = c.id AND deleted = 0 AND (dropped = 0 OR user_id = ?)), c.created_at) DESC`)
+    .all(userId, userId);
+  return rows.map((r) => chatPayloadFor(r.id, userId))
+    .filter(Boolean)
+    // A DM I blocked stays out of my list until it has visible content —
+    // otherwise a ghost chat started by someone I blocked would just appear.
+    .filter((c) => !(c.blocked && !c.lastMessage));
 }
 
 /* ============================= REPORTS ============================= */
@@ -565,7 +582,7 @@ export function searchMessagesGlobal(userId, q, limit = 30) {
                      FROM messages m
                      JOIN users u ON u.id = m.user_id
                      JOIN chat_members cm ON cm.chat_id = m.chat_id AND cm.user_id = ?
-                     WHERE m.deleted = 0 AND m.system = 0 AND m.content != '' AND m.enc = 0
+                     WHERE m.deleted = 0 AND m.system = 0 AND m.content != '' AND m.enc = 0 AND m.dropped = 0
                        AND m.content LIKE ? ESCAPE '\\'
                      ORDER BY m.id DESC LIMIT ?`).all(userId, like, limit);
 }

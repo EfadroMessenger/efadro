@@ -178,6 +178,10 @@ CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id);
 
 /* v1.5.0: end-to-end encryption — identity keys, wrapped chat keys, transfers */
 ensureColumn('messages', 'enc INTEGER NOT NULL DEFAULT 0', 'enc');
+/* v1.8.0: stealth blocking — "ghost" messages are accepted from a blocked
+   sender (so blocking stays undetectable) but permanently invisible to the
+   blocker and to everyone except their own author. */
+ensureColumn('messages', 'dropped INTEGER NOT NULL DEFAULT 0', 'dropped');
 ensureColumn('messages', 'kid INTEGER', 'kid'); // chat-key epoch used for ciphertext
 ensureColumn('messages', 'iv TEXT', 'iv');
 ensureColumn('messages', 'sig TEXT', 'sig');

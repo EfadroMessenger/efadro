@@ -62,7 +62,7 @@ export function filesRouter(cfg, hub) {
         const e2ee = req.body?.enc === '1' ? {
           kid: req.body?.kid, civ: req.body?.civ, cct: req.body?.cct, csig: req.body?.csig, fiv: req.body?.fiv,
         } : null;
-        const { chat, message } = services.postFileMessage(req.user, req.params.id, caption, {
+        const { chat, message, silentFor } = services.postFileMessage(req.user, req.params.id, caption, {
           storedName: req.file.filename,
           originalName: String(req.file.originalname || 'file').slice(0, 200),
           // ciphertext uploads always arrive as octet-stream; the true mime travels as a field
@@ -70,7 +70,7 @@ export function filesRouter(cfg, hub) {
           size: req.file.size,
           kind, duration,
         }, cfg.limits, e2ee);
-        services.emitNewMessage(hub, chat.id, message, req.body?.clientId ?? null);
+        services.emitNewMessage(hub, chat.id, message, req.body?.clientId ?? null, { excludeUserIds: silentFor });
         res.status(201).json({ message });
       } catch (e) {
         fs.promises.unlink(path.join(uploadDir, req.file.filename)).catch(() => {});

@@ -54,11 +54,16 @@ export function e2eeRouter(cfg, hub) {
     const { chat, epoch, firstEpoch } = services.createKeyEpoch(
       req.user, String(req.params.id), req.body?.epoch, req.body?.wraps,
     );
+    // stealth blocking: if a member blocked this key creator, the "encryption
+    // is on" fan-out must never reach them — they'd learn the DM got activity
+    const stealthPeer = chat.type === 'dm'
+      ? store.getMembers(chat.id).find((m) => m.id !== req.user.id && store.isBlocked(m.id, req.user.id)) ?? null
+      : null;
     if (firstEpoch) {
-      const sys = services.postSystemMessage(chat.id, req.user.id, '🔒 End-to-end encryption is now on for this chat');
-      services.emitNewMessage(hub, chat.id, sys);
+      const sys = services.postSystemMessage(chat.id, req.user.id, '🔒 End-to-end encryption is now on for this chat', { dropped: Boolean(stealthPeer) });
+      services.emitNewMessage(hub, chat.id, sys, null, { excludeUserIds: stealthPeer ? [stealthPeer.id] : null });
     }
-    services.emitChatToMembers(hub, chat.id, { type: 'chat:e2ee', onlyUserIds: null });
+    services.emitChatToMembers(hub, chat.id, { type: 'chat:e2ee', onlyUserIds: stealthPeer ? [req.user.id] : null });
     res.status(201).json({ ok: true, epoch });
   }));
 

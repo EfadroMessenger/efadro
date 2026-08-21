@@ -47,14 +47,14 @@ export function chatsRouter(cfg, hub) {
     if (store.isBlocked(req.user.id, targetId)) {
       throw new HttpError(403, 'You blocked this user — unblock them to chat', { code: 'blocked' });
     }
-    if (store.isBlocked(targetId, req.user.id)) {
-      throw new HttpError(403, 'You can’t message this user', { code: 'blocked' });
-    }
+    // If THEY blocked the caller, everything proceeds normally for the caller
+    // (stealth blocking) — but the blocker must not learn a new chat appeared.
+    const stealth = store.isBlocked(targetId, req.user.id);
     const key = [req.user.id, targetId].sort().join(':');
     let chat = store.getDmByKey(key);
     if (!chat) {
       chat = store.createChat({ type: 'dm', dmKey: key, createdBy: req.user.id, memberIds: [req.user.id, targetId] });
-      services.emitChatToMembers(hub, chat.id, { type: 'chat:new' });
+      services.emitChatToMembers(hub, chat.id, { type: 'chat:new', onlyUserIds: stealth ? [req.user.id] : null });
     } else if (!store.isMember(chat.id, req.user.id)) {
       // Re-joining after "delete chat": fresh start (no backlog of unread)
       store.addMembers(chat.id, [req.user.id]);
@@ -174,8 +174,8 @@ export function chatsRouter(cfg, hub) {
   /* ------------------------------ polls (v1.4) ------------------------------ */
 
   r.post('/:id/polls', msgLimiter, asyncH(async (req, res) => {
-    const { chat, message } = services.createPollInChat(req.user, req.params.id, req.body ?? {});
-    services.emitNewMessage(hub, chat.id, message);
+    const { chat, message, silentFor } = services.createPollInChat(req.user, req.params.id, req.body ?? {});
+    services.emitNewMessage(hub, chat.id, message, null, { excludeUserIds: silentFor });
     res.status(201).json({ message });
   }));
 
@@ -210,11 +210,12 @@ export function chatsRouter(cfg, hub) {
 
   r.post('/:id/messages', msgLimiter, asyncH(async (req, res) => {
     const e2ee = req.body?.enc ? { kid: req.body?.kid, iv: req.body?.iv, ct: req.body?.ct, sig: req.body?.sig } : null;
-    const { chat, message } = services.postMessage(
+    const { chat, message, silentFor } = services.postMessage(
       req.user, req.params.id, e2ee ? req.body?.ct : req.body?.content, cfg.limits,
       { replyTo: req.body?.replyTo, e2ee },
     );
-    services.emitNewMessage(hub, chat.id, message, req.body?.clientId ?? null);
+    // silentFor: stealth blocking — the blocker receives no frame at all
+    services.emitNewMessage(hub, chat.id, message, req.body?.clientId ?? null, { excludeUserIds: silentFor });
     res.status(201).json({ message });
   }));
 
@@ -289,8 +290,8 @@ export function messagesRouter(cfg, hub) {
   r.post('/:id/forward', asyncH(async (req, res) => {
     const msgId = vInt(req.params.id, { label: 'id', min: 1 });
     const target = vStr(req.body?.chatId, { label: 'Target chat', min: 1, max: 64 });
-    const { chat, message } = services.forwardMessage(req.user, msgId, target, cfg.limits);
-    services.emitNewMessage(hub, chat.id, message);
+    const { chat, message, silentFor } = services.forwardMessage(req.user, msgId, target, cfg.limits);
+    services.emitNewMessage(hub, chat.id, message, null, { excludeUserIds: silentFor });
     res.status(201).json({ message });
   }));
 

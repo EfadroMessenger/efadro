@@ -6,11 +6,11 @@
 
 'use strict';
 
-import { EMOJI_CATEGORIES, SEARCH_INDEX, renderEmojiText, emojiOnly, emojiImg } from './emoji.js?v=1.7.0';
-import * as E2EE from './e2ee.js?v=1.7.0';
+import { EMOJI_CATEGORIES, SEARCH_INDEX, renderEmojiText, emojiOnly, emojiImg } from './emoji.js?v=1.8.0';
+import * as E2EE from './e2ee.js?v=1.8.0';
 
 /** Web-client build version — keep in sync with package.json / server APP_VERSION. */
-const CLIENT_VERSION = '1.7.0';
+const CLIENT_VERSION = '1.8.0';
 
 /* ----------------------------- helpers ----------------------------- */
 
@@ -1854,7 +1854,7 @@ function renderBlockBanner() {
   const blocked = Boolean(chat?.type === 'dm' && peer && chat.blocked);
   area.innerHTML = blocked
     ? `<div class="mute-banner block-banner">${icons.ban}
-         <span>You blocked <b>@${esc(peer?.username || '')}</b> — they can’t message or call you.</span>
+         <span>You blocked <b>@${esc(peer?.username || '')}</b> — their messages and calls silently never reach you (and they can’t tell).</span>
          <button class="btn btn-sm" id="block-unblock-btn">${icons.refresh}<span>Unblock</span></button>
        </div>`
     : '';
@@ -1886,7 +1886,7 @@ async function toggleBlockUser(peer, { ask = true } = {}) {
   if (!currentlyBlocked && ask) {
     const yes = await confirmModal({
       title: `Block @${peer.username}?`,
-      body: 'They won’t be able to send you messages or call you in this direct chat. They are not notified.',
+      body: 'Their new messages and calls will silently never reach you — from their side everything keeps looking normal (messages send, calls just ring out), so they can’t tell they were blocked. They are not notified. Shared group chats are unaffected.',
       confirmText: 'Block',
       danger: true,
     });
@@ -4507,7 +4507,7 @@ function openSettings() {
 
     <div class="card">
       <h3>Privacy</h3>
-      <div class="small faint mb-3">Blocked users can’t send you direct messages or call you. Blocking is private — nobody is notified, and shared group chats are unaffected.</div>
+      <div class="small faint mb-3">Messages and calls from people you block silently never reach you — everything keeps looking normal on their side, so they can’t tell they were blocked. Shared group chats are unaffected.</div>
       <div class="list-label" style="padding:4px 4px 8px">Blocked users</div>
       <div id="set-blocks"><span class="spinner"></span></div>
     </div>
