@@ -6,11 +6,11 @@
 
 'use strict';
 
-import { EMOJI_CATEGORIES, SEARCH_INDEX, renderEmojiText, emojiOnly, emojiImg } from './emoji.js?v=1.8.0';
-import * as E2EE from './e2ee.js?v=1.8.0';
+import { EMOJI_CATEGORIES, SEARCH_INDEX, renderEmojiText, emojiOnly, emojiImg } from './emoji.js?v=1.8.1';
+import * as E2EE from './e2ee.js?v=1.8.1';
 
 /** Web-client build version — keep in sync with package.json / server APP_VERSION. */
-const CLIENT_VERSION = '1.8.0';
+const CLIENT_VERSION = '1.8.1';
 
 /* ----------------------------- helpers ----------------------------- */
 
@@ -434,6 +434,8 @@ const S = {
   base: null,
   info: null,
   gateToken: null,
+  gateTs: 0,        // when the gate token was issued (10-minute JWT)
+  authDraft: null,  // typed-but-unsent credentials, kept across join-step re-dos
   token: null,
   user: null,
   ws: null,
@@ -537,6 +539,40 @@ function resetTurnstile() {
   try { if (S.tsWidgetId !== null && window.turnstile) window.turnstile.reset(S.tsWidgetId); } catch { /* ignore */ }
 }
 
+/* ----------------------- gate-token keep-alive ----------------------- */
+
+/** Gate tokens are 10-minute JWTs. Open servers (no password, no captcha)
+ *  can renew them invisibly — so lingering on the sign-in screen never
+ *  kicks the user back to the start of the join flow. */
+function canSilentlyRenewGate() {
+  return !S.info?.serverPasswordRequired && !S.info?.turnstile?.enabled;
+}
+
+let gateRenewTimer = null;
+function scheduleGateRenew() {
+  clearTimeout(gateRenewTimer);
+  if (!S.gateToken || S.token || !canSilentlyRenewGate()) return;
+  // refresh a bit before the JWT would expire while the tab stays open
+  gateRenewTimer = setTimeout(() => {
+    if (!S.token) renewGate().catch(() => {});
+  }, 8 * 60 * 1000);
+}
+
+/** Fetch a fresh gate token (open servers only). Throws on network trouble. */
+async function renewGate() {
+  const j = await api('/api/gate', { method: 'POST', auth: false, body: {} });
+  S.gateToken = j.gateToken;
+  S.gateTs = Date.now();
+  scheduleGateRenew();
+}
+
+// wake-from-sleep: the timer fires late, so renew on focus if the token went stale
+window.addEventListener('focus', () => {
+  if (!S.token && S.gateToken && canSilentlyRenewGate() && Date.now() - (S.gateTs || 0) > 8 * 60 * 1000) {
+    renewGate().catch(() => {});
+  }
+});
+
 /* --------------------------- error helper --------------------------- */
 
 function setErr(id, msg) {
@@ -583,6 +619,7 @@ function swapTo(renderFn) {
 
 function showServerScreen(notice = '') {
   teardownApp();
+  S.authDraft = null; // "start over" clears saved form input too
   const recent = store.recentServers;
   // The single-file build (__EFADRO_SINGLE_FILE__, set by `npm run build`) is
   // usually NOT hosted on the efadro server itself, so location.origin would be
@@ -741,7 +778,9 @@ async function submitGate(serverPassword) {
       body: { serverPassword, turnstileToken: S.tsToken || '' },
     });
     S.gateToken = j.gateToken;
-    showAuth('login');
+    S.gateTs = Date.now();
+    scheduleGateRenew();
+    showAuth('login', S.authDraft || {});
   } catch (e) {
     if (e?.data?.code === 'captcha' && S.info.turnstile.enabled) {
       resetTurnstile();
@@ -810,11 +849,12 @@ function collectAuth() {
   };
 }
 
-async function doAuth(mode) {
+async function doAuth(mode, gateRetry = false) {
   setErr('gate-err', '');
   const btn = $('#auth-go');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span><span>One moment…</span>';
+  S.authDraft = collectAuth(); // survive any join-step re-do below
   try {
     const username = $('#auth-user').value.trim();
     const password = $('#auth-pass').value;
@@ -836,14 +876,24 @@ async function doAuth(mode) {
     btn.disabled = false;
     btn.textContent = mode === 'register' ? 'Create account' : 'Sign in';
     if (e?.data?.code === 'gate') {
-      // gate token expired — silently get a fresh one when possible
-      if (!S.info.serverPasswordRequired && !S.info.turnstile.enabled) {
+      // The 10-minute join window expired (or the server restarted with a new
+      // key). Recover in place — never bounce the user back to square one.
+      if (canSilentlyRenewGate() && !gateRetry) {
         try {
-          const g = await api('/api/gate', { method: 'POST', auth: false, body: {} });
-          S.gateToken = g.gateToken;
-          return doAuth(mode);
-        } catch { /* fall through */ }
+          await renewGate();
+          return doAuth(mode, true);
+        } catch {
+          // renewal itself failed — almost always a network hiccup; be honest
+          return setErr('gate-err', 'Lost the connection while renewing your join session — check your network and press Sign in again.');
+        }
       }
+      // Gated server (password/captcha): redo only the missing step, keep the typed username
+      toast('Your join window expired — one more step to continue', 'info', 4000);
+      if (S.info?.turnstile?.enabled) {
+        resetTurnstile();
+        return proceedToCaptcha();
+      }
+      if (S.info?.serverPasswordRequired) return proceedToPassword();
       return showServerScreen('Your join window expired — please join again.');
     }
     setErr('gate-err', e.message);
@@ -894,6 +944,11 @@ function showTwoFactor(pendingToken) {
       } catch (e) {
         btn.disabled = false;
         btn.innerHTML = `${icons.shieldCheck}<span>Verify</span>`;
+        if (e?.data?.code === '2fa') {
+          // the 5-minute pending token expired — restart the sign-in, keep the username
+          toast('Your 2FA window expired — please sign in again', 'info', 4000);
+          return showAuth('login', S.authDraft || {});
+        }
         setErr('gate-err', e.message);
         input.select();
       }
