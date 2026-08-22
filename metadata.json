@@ -1,0 +1,8 @@
+{
+  "name": "Efadro",
+  "description": "Self-hosted encrypted messenger with direct & group chats, voice/video calls, reactions, polls, and media sharing",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
