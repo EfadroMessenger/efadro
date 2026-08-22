@@ -3,7 +3,7 @@
  * keystore (IndexedDB), chat-key management, en/decryption and device
  * transfers. Everything cryptographic comes from e2ee-core.js.
  */
-import * as C from './e2ee-core.js?v=1.8.0';
+import * as C from './e2ee-core.js?v=1.8.1';
 
 /* ------------------------------ keystore ------------------------------ */
 
