@@ -1,7 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import Database from 'better-sqlite3';
 import { CONFIG_PATH } from './config.js';
+
+// Prefer the native better-sqlite3 driver; fall back to the built-in
+// node:sqlite shim when the native module is unavailable (optional
+// dependency not installed / failed to build).
+let Database;
+try {
+  ({ default: Database } = await import('better-sqlite3'));
+} catch {
+  ({ default: Database } = await import('./sqlite-shim.js'));
+  console.log('[efadro] better-sqlite3 not available — using the built-in node:sqlite driver');
+}
 
 // The database lives next to config.json so an instance is fully self-contained.
 export const DATA_DIR = process.env.EFADRO_DATA

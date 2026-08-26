@@ -1,6 +1,6 @@
 {
   "name": "efadro",
-  "version": "1.8.1",
+  "version": "1.9.0",
   "description": "efadro — a self-hosted real-time messenger with roles, moderation and Cloudflare Turnstile support",
   "type": "module",
   "main": "server/index.js",
@@ -19,13 +19,15 @@
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^12.2.0",
     "express": "^4.21.2",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.2.0",
     "qrcode": "^1.5.4",
     "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.2.0"
   },
   "devDependencies": {
     "esbuild": "^0.28.1"

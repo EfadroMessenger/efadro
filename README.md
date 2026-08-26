@@ -76,7 +76,7 @@ EFADRO BETA TEST STARTS AUG 20
 Staff panel tabs: **Users** · **Reports** · **Audit log** · **Server settings** (owner only) — with live stats (online, users, chats, messages, bans).
 
 **Misc**
-- Dark / light theme, accent colors, animated aurora UI
+- **Modrinth-inspired UI** (v1.9): brand green `#1bd96a`, flat dark/light themes, pill buttons, underline tabs — plus animated aurora accents & spring-motion micro-animations throughout
 - Real `efadro` logo image — a styled transparent lowercase “e” (`public/img/logo.svg`, vector, no background tile) — favicon, join screen, sidebar & staff panel
 - Sane caching: HTML served `no-cache`, JS/CSS/images version-busted (`?v=`) with long `max-age`, so updates always reach clients
 - Fully responsive (mobile layout with collapsible sidebar)
@@ -94,6 +94,12 @@ npm start
 ```
 
 Then open **http://localhost:3000** — the web client is served by the same process.
+
+> **SQLite driver:** efadro prefers the native [`better-sqlite3`](https://github.com/WiseLibs/better-sqlite3)
+> package (listed as an *optional* dependency). If it can't be installed or built on your machine,
+> the server automatically falls back to the built-in `node:sqlite` driver (**Node.js ≥ 22.5**).
+> No configuration needed — the same SQLite file format is used either way.
+> (Node 18–22.4 requires a working `better-sqlite3` build.)
 
 All run/build commands:
 
@@ -303,6 +309,8 @@ efadro/
 │   ├── index.js           # entry: express + helmet + static + ws wiring
 │   ├── config.js          # config loading/creation/atomic saving
 │   ├── db.js              # SQLite schema (+ reactions, replies, pins, avatars,
+│   │                      #   auto-migrations) + native→node:sqlite driver fallback
+│   ├── sqlite-shim.js     # better-sqlite3-compatible adapter over node:sqlite
 │   │                      #   polls, invite links, per-chat prefs, E2EE tables;
 │   │                      #   auto-migrations)
 │   ├── store.js           # data-access layer
@@ -324,7 +332,7 @@ efadro/
 │       └── admin.js       # moderation: users/reports/audit/server config
 ├── public/
 │   ├── index.html
-│   ├── css/style.css      # animated aurora UI, dark/light themes
+│   ├── css/style.css      # Modrinth-inspired UI, dark/light themes
 │   ├── img/logo.svg       # the efadro logo (styled transparent “e”, no background)
 │   ├── js/e2ee-core.js    # isomorphic WebCrypto primitives (browser + Node ≥19)
 │   ├── js/e2ee.js         # keystore (IndexedDB), chat-key epochs, encrypt/decrypt,
