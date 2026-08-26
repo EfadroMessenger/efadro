@@ -151,7 +151,7 @@ const icons = {
   zap: ic('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>', 15),
 };
 
-const NOTIFY_ICON = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="#6366f1"/><text x="32" y="45" font-family="Verdana, Arial, sans-serif" font-size="38" font-weight="700" text-anchor="middle" fill="#fff">e</text></svg>');
+const NOTIFY_ICON = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="#00af5c"/><text x="32" y="45" font-family="Verdana, Arial, sans-serif" font-size="38" font-weight="700" text-anchor="middle" fill="#fff">e</text></svg>');
 const logoImg = (cls = '') => `<span class="logo-slot ${cls}" role="img" aria-label="efadro"></span>`;
 
 /* ------------------------------ toasts ------------------------------ */
@@ -468,7 +468,7 @@ function applyPrefs() {
     '#fbbf24': '#f87171', '#34d399': '#22d3ee',
   };
   document.documentElement.style.setProperty('--accent', S.prefs.accent);
-  document.documentElement.style.setProperty('--accent-2', accents[S.prefs.accent] || '#22d3ee');
+  document.documentElement.style.setProperty('--accent-2', accents[S.prefs.accent] || '#00af5c');
 }
 
 /* ------------------------------- api -------------------------------- */
@@ -961,7 +961,7 @@ function showTwoFactor(pendingToken) {
 /* ============================== CHAT APP ============================== */
 
 function avatarHtml(user, sizeClass = '', withPresence = false, group = false) {
-  const bg = user?.avatarColor || '#6366f1';
+  const bg = user?.avatarColor || '#1bd96a';
   const inner = user?.selfChat
     ? '🔖'
     : user?.avatarUrl
@@ -983,7 +983,7 @@ function chatPeer(chat) {
   return chat.members.find((m) => m.id !== S.user.id) || null;
 }
 function chatAvatar(chat, sizeClass = '', withPresence = true) {
-  if (chat.type === 'group') return avatarHtml({ displayName: chat.name, avatarColor: '#4f46e5' }, sizeClass, false, true);
+  if (chat.type === 'group') return avatarHtml({ displayName: chat.name, avatarColor: '#16a34a' }, sizeClass, false, true);
   const other = chatPeer(chat);
   if (!other) return avatarHtml({ selfChat: true, avatarColor: '#0ea5e9' }, sizeClass);
   return avatarHtml(other, sizeClass, withPresence);
