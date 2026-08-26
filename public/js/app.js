@@ -6,11 +6,11 @@
 
 'use strict';
 
-import { EMOJI_CATEGORIES, SEARCH_INDEX, renderEmojiText, emojiOnly, emojiImg } from './emoji.js?v=1.8.1';
-import * as E2EE from './e2ee.js?v=1.8.1';
+import { EMOJI_CATEGORIES, SEARCH_INDEX, renderEmojiText, emojiOnly, emojiImg } from './emoji.js?v=1.9.0';
+import * as E2EE from './e2ee.js?v=1.9.0';
 
 /** Web-client build version — keep in sync with package.json / server APP_VERSION. */
-const CLIENT_VERSION = '1.8.1';
+const CLIENT_VERSION = '1.9.0';
 
 /* ----------------------------- helpers ----------------------------- */
 
@@ -455,7 +455,7 @@ const S = {
   mentionJump: null, // {chatId, messageId} pending jump-to-mention
   showArchived: false, // archived chats section expanded
   avatarTs: 0,       // cache-buster for our own avatar after upload
-  prefs: { theme: 'dark', accent: '#6366f1', sound: true, notify: false },
+  prefs: { theme: 'dark', accent: '#1bd96a', sound: true, notify: false },
   tsToken: null,
   tsWidgetId: null,
   panel: { open: false, tab: 'users', cache: {} },
@@ -464,7 +464,7 @@ const S = {
 function applyPrefs() {
   document.documentElement.dataset.theme = S.prefs.theme;
   const accents = {
-    '#6366f1': '#22d3ee', '#22d3ee': '#34d399', '#f472b6': '#a78bfa',
+    '#1bd96a': '#00af5c', '#6366f1': '#22d3ee', '#22d3ee': '#34d399', '#f472b6': '#a78bfa',
     '#fbbf24': '#f87171', '#34d399': '#22d3ee',
   };
   document.documentElement.style.setProperty('--accent', S.prefs.accent);
@@ -4514,7 +4514,7 @@ function loadBlockedUsersCard(root) {
 }
 
 function openSettings() {
-  const accents = ['#6366f1', '#22d3ee', '#f472b6', '#fbbf24', '#34d399'];
+  const accents = ['#1bd96a', '#22d3ee', '#f472b6', '#fbbf24', '#34d399'];
   openModal(`
     <div class="modal-head"><div class="modal-title">Settings</div></div>
 
@@ -5233,7 +5233,9 @@ window.addEventListener('focus', () => { if (S.activeChatId) markRead(S.activeCh
 
 (function boot() {
   captureInviteFromHash(); // an #invite=TOKEN deep link must survive the join flow
-  S.prefs = { theme: 'dark', accent: '#6366f1', sound: true, notify: false, ...store.prefs };
+  S.prefs = { theme: 'dark', accent: '#1bd96a', sound: true, notify: false, ...store.prefs };
+  // v1.9 migration: the pre-1.9 default accent was indigo — bring old installs onto the new brand green
+  if (S.prefs.accent === '#6366f1') S.prefs.accent = '#1bd96a';
   applyPrefs();
   showServerScreen();
 })();

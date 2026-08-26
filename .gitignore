@@ -1,0 +1,14 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# runtime data (SQLite database, uploads, avatars) — created by the server on boot
+data/
+server/data/
+
+# logs & scratch
+*.log
+shots/
+.DS_Store
